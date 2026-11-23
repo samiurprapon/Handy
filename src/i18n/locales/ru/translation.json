@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "Среда транскрипции",
+        "description": "Движок, который запускает речевые модели. WhisperKit запускает модели Core ML на Neural Engine в Apple Silicon. У каждой среды свои модели.",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "Удалять слова-паразиты",
         "description": "Удаляет распространённые слова-заминки из расшифровок. Отключите, чтобы сохранить их."

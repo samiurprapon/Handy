@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "รันไทม์การถอดเสียง",
+        "description": "เอนจินที่ใช้รันโมเดลเสียงพูด WhisperKit รันโมเดล Core ML บน Neural Engine ของ Apple Silicon แต่ละรันไทม์มีโมเดลของตัวเอง",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "ลบคำติดปาก",
         "description": "ลบคำติดปากทั่วไปออกจากข้อความที่ถอดได้ ปิดใช้งานเพื่อเก็บคำเหล่านั้นไว้"

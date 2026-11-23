@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "Środowisko transkrypcji",
+        "description": "Silnik, który uruchamia modele mowy. WhisperKit uruchamia modele Core ML na Neural Engine układów Apple Silicon. Każde środowisko ma własne modele.",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "Usuń wyrazy wypełniające",
         "description": "Usuwa typowe słowa wyrażające wahanie z transkrypcji. Wyłącz, aby je zachować."

@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "轉寫執行環境",
+        "description": "執行語音模型的引擎。WhisperKit 在 Apple Silicon 的神經網路引擎上執行 Core ML 模型。每個執行環境有各自的模型。",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "移除語助詞",
         "description": "從轉錄中移除常見的語助詞。關閉此選項即可保留這些詞。"

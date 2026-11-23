@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "ट्रांसक्रिप्शन रनटाइम",
+        "description": "वह इंजन जो स्पीच मॉडल चलाता है। WhisperKit, Apple Silicon के Neural Engine पर Core ML मॉडल चलाता है। हर रनटाइम के अपने मॉडल होते हैं।",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "फिलर शब्द हटाएं",
         "description": "ट्रांसक्रिप्शन से आम हिचकिचाहट वाले शब्द हटाता है। उन्हें बनाए रखने के लिए इसे बंद करें।"

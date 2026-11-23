@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "محرك التفريغ",
+        "description": "المحرك الذي يشغّل نماذج الكلام. يشغّل WhisperKit نماذج Core ML على المحرك العصبي في Apple Silicon. لكل محرك نماذجه الخاصة.",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "إزالة كلمات الحشو",
         "description": "يزيل كلمات التردد الشائعة من النصوص. عطّل هذا الخيار للاحتفاظ بها."

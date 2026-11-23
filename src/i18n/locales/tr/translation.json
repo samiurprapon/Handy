@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "Transkripsiyon Çalışma Zamanı",
+        "description": "Konuşma modellerini çalıştıran motor. WhisperKit, Core ML modellerini Apple Silicon'un Neural Engine'inde çalıştırır. Her çalışma zamanının kendi modelleri vardır.",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "Dolgu Sözcüklerini Kaldır",
         "description": "Transkripsiyonlardaki yaygın duraksama sözcüklerini kaldırır. Bunları korumak için kapatın."

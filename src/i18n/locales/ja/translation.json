@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "文字起こしランタイム",
+        "description": "音声モデルを実行するエンジンです。WhisperKit は Apple Silicon の Neural Engine で Core ML モデルを実行します。ランタイムごとに使えるモデルが異なります。",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "フィラー語を削除",
         "description": "文字起こしから一般的なフィラー語を削除します。残すにはオフにしてください。"

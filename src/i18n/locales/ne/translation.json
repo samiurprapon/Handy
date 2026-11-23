@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "ट्रान्सक्रिप्सन रनटाइम",
+        "description": "स्पीच मोडेलहरू चलाउने इन्जिन। WhisperKit ले Apple Silicon को Neural Engine मा Core ML मोडेलहरू चलाउँछ। प्रत्येक रनटाइमका आफ्नै मोडेलहरू हुन्छन्।",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "फिलर शब्दहरू हटाउनुहोस्",
         "description": "ट्रान्सक्रिप्सनबाट सामान्य हिचकिचाहटका शब्दहरू हटाउँछ। तिनलाई राख्न यो विकल्प बन्द गर्नुहोस्।"

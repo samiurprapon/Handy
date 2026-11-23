@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "Transkriptions-Laufzeit",
+        "description": "Die Engine, die Sprachmodelle ausführt. WhisperKit führt Core-ML-Modelle auf der Neural Engine von Apple Silicon aus. Jede Laufzeit hat eigene Modelle.",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "Füllwörter entfernen",
         "description": "Entfernt häufige Verzögerungslaute aus Transkriptionen. Deaktivieren Sie diese Option, um sie beizubehalten."

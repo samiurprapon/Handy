@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "전사 런타임",
+        "description": "음성 모델을 실행하는 엔진입니다. WhisperKit은 Apple Silicon의 Neural Engine에서 Core ML 모델을 실행합니다. 런타임마다 사용하는 모델이 다릅니다.",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "군더더기 표현 제거",
         "description": "전사에서 흔한 머뭇거림 표현을 제거합니다. 그대로 두려면 이 옵션을 끄세요."

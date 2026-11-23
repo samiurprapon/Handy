@@ -612,6 +612,14 @@
           "earshot": "Earshot"
         }
       },
+      "transcriptionRuntime": {
+        "title": "Moteur de transcription",
+        "description": "Le moteur qui exécute les modèles vocaux. WhisperKit exécute des modèles Core ML sur le Neural Engine d'Apple Silicon. Chaque moteur a ses propres modèles.",
+        "options": {
+          "transcribeCpp": "transcribe-cpp",
+          "whisperKit": "WhisperKit (Core ML)"
+        }
+      },
       "fillerWordRemoval": {
         "title": "Supprimer les mots de remplissage",
         "description": "Supprime les hésitations courantes des transcriptions. Désactivez cette option pour les conserver."
