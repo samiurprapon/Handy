@@ -45,3 +45,6 @@ result
 
 # Python bytecode (scripts/)
 __pycache__/
+
+# WhisperKit Swift package build cache (SwiftPM owns this directory).
+src-tauri/swift/WhisperKitBridge/.build/
