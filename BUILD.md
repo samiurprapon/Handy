@@ -16,6 +16,10 @@ This guide covers how to set up the development environment and build Handy from
 
 - Xcode Command Line Tools
 - Install with: `xcode-select --install`
+- Optional WhisperKit engine (Swift/Core ML transcription on Apple Silicon):
+   built by the Swift toolchain (Command Line Tools suffice; no macros). If
+   `swift build` cannot run, the build falls back to a stub with a warning;
+   `HANDY_FORCE_WHISPERKIT_STUB=1` forces the stub explicitly.
 
 #### Windows
 

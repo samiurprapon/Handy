@@ -61,6 +61,9 @@ Handy is a cross-platform desktop speech-to-text application built with Tauri 2.
   - `model.rs` - Model downloading and management
   - `transcription.rs` - Speech-to-text processing pipeline
   - `history.rs` - Transcription history storage
+- `whisperkit/` - Optional Swift/Core ML engine (WhisperKit) on macOS Apple
+  Silicon; the Swift package lives in `src-tauri/swift/WhisperKitBridge`,
+  compiled and linked by `build.rs`, with a same-API stub elsewhere
 - `audio_toolkit/` - Low-level audio processing:
   - `audio/` - Recording sink (VAD, levels, live streaming feed), output devices, WAV I/O
   - `vad/` - Voice Activity Detection (Silero VAD)
