@@ -13,7 +13,7 @@ use crate::language_detection::{
     IdentifyError, LanguageDecision, LanguageDetector, LanguageSource, Plan,
 };
 use crate::managers::audio::{create_smoothed_detector, AudioRecordingManager};
-use crate::managers::model::ModelManager;
+use crate::managers::model::{ModelInfo, ModelManager, ModelSource};
 use crate::notices::{self, Notice, NoticeCode, NoticeSource};
 use crate::overlay;
 use crate::settings::{
@@ -246,6 +246,10 @@ pub struct TranscriptionManager {
     /// The transcribe-cpp engine: owns the worker process, its model, and
     /// recovery from crashes and hangs.
     engine: EngineSupervisor,
+    /// The Swift WhisperKit (Core ML) engine. Holds no model until a
+    /// WhisperKit-model load routes here; `WhisperKitEngine` is a stub with
+    /// the same API on builds without the Swift package.
+    whisperkit: Arc<crate::whisperkit::WhisperKitEngine>,
     model_manager: Arc<ModelManager>,
     app_handle: AppHandle,
     current_model_id: Arc<Mutex<Option<String>>>,
@@ -284,6 +288,7 @@ impl TranscriptionManager {
     pub fn new(app_handle: &AppHandle, model_manager: Arc<ModelManager>) -> Result<Self> {
         let manager = Self {
             engine: EngineSupervisor::new(!transcribe_gpu_disabled_for_host()),
+            whisperkit: Arc::new(crate::whisperkit::WhisperKitEngine::new()),
             model_manager,
             app_handle: app_handle.clone(),
             current_model_id: Arc::new(Mutex::new(None)),
@@ -466,6 +471,7 @@ impl TranscriptionManager {
     /// its load is queued behind this unload, so the unload can never affect
     /// it. Only the worker's exit is left to wait for.
     fn begin_unload(&self) -> Unloading {
+        self.whisperkit.unload_model();
         let unloading = self.engine.unload();
         self.language_detector.unload();
         {
@@ -586,6 +592,13 @@ impl TranscriptionManager {
             .get_model_path(model_id)
             .inspect_err(|error| emit_loading_failed(&error.to_string()))?;
 
+        if let ModelSource::WhisperKit { .. } = &model_info.source {
+            return self.load_whisperkit_model(model_id, &model_info, model_path);
+        }
+
+        // Exactly one engine holds a model: free the Swift side before
+        // transcribe-cpp takes the memory.
+        self.whisperkit.unload_model();
         // Clear the id before loading: if the new load fails, status should
         // read "no loaded model", not the model the worker is replacing.
         {
@@ -692,6 +705,142 @@ impl TranscriptionManager {
         Ok(())
     }
 
+    /// Load a model on the WhisperKit (Swift/Core ML) engine. Mirrors
+    /// [`Self::load_model_with_device`]'s event contract exactly, so the
+    /// frontend cannot tell the engines apart by their events.
+    fn load_whisperkit_model(
+        &self,
+        model_id: &str,
+        model_info: &ModelInfo,
+        model_path: std::path::PathBuf,
+    ) -> Result<()> {
+        let load_start = std::time::Instant::now();
+        debug!(
+            "Loading WhisperKit model {}: {}",
+            model_id,
+            model_path.display()
+        );
+
+        let _ = self.app_handle.emit(
+            "model-state-changed",
+            ModelStateEvent {
+                event_type: "loading_started".to_string(),
+                model_id: Some(model_id.to_string()),
+                model_name: None,
+                error: None,
+            },
+        );
+        let emit_loading_failed = |error_msg: &str| {
+            let _ = self.app_handle.emit(
+                "model-state-changed",
+                ModelStateEvent {
+                    event_type: "loading_failed".to_string(),
+                    model_id: Some(model_id.to_string()),
+                    model_name: Some(model_info.name.clone()),
+                    error: Some(error_msg.to_string()),
+                },
+            );
+        };
+
+        // Exactly one engine holds a model: drop any transcribe-cpp worker
+        // before Swift takes the memory.
+        if self.engine.loaded().is_some() {
+            self.begin_unload().wait();
+        }
+        {
+            let mut current_model = self.current_model_id.lock().unwrap();
+            *current_model = None;
+        }
+
+        if let Err(e) = self.whisperkit.load_model(&model_path) {
+            let error_msg = e.to_string();
+            emit_loading_failed(&error_msg);
+            return Err(anyhow::anyhow!(error_msg));
+        }
+
+        {
+            let mut current_model = self.current_model_id.lock().unwrap();
+            *current_model = Some(model_id.to_string());
+        }
+        self.touch_activity();
+        let _ = self.app_handle.emit(
+            "model-state-changed",
+            ModelStateEvent {
+                event_type: "loading_completed".to_string(),
+                model_id: Some(model_id.to_string()),
+                model_name: Some(model_info.name.clone()),
+                error: None,
+            },
+        );
+        for source in [NoticeSource::Dictation, NoticeSource::Model] {
+            for code in [NoticeCode::ModelLoadFailed, NoticeCode::NoModelSelected] {
+                notices::clear_matching(&self.app_handle, source, Some(code));
+            }
+        }
+        info!(
+            "Loaded WhisperKit model '{}' ({}) in {}ms",
+            model_id,
+            crate::whisperkit::WhisperKitEngine::version(),
+            load_start.elapsed().as_millis()
+        );
+        Ok(())
+    }
+
+    /// Whether the currently selected/loaded model runs on WhisperKit.
+    fn uses_whisperkit(&self) -> bool {
+        self.get_current_model().is_some_and(|id| {
+            self.model_manager
+                .get_model_info(&id)
+                .is_some_and(|info| matches!(info.source, ModelSource::WhisperKit { .. }))
+        })
+    }
+
+    /// Decode `audio` with the loaded WhisperKit model into the same
+    /// [`RunOutcome`] shape the transcribe-cpp path produces, so language
+    /// reporting and post-processing stay identical downstream.
+    fn transcribe_whisperkit(&self, audio: Vec<f32>) -> Result<RunOutcome> {
+        let Some(model_id) = self.get_current_model() else {
+            return Err(anyhow::anyhow!("Model is not loaded for transcription."));
+        };
+        let info = self
+            .model_manager
+            .get_model_info(&model_id)
+            .ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
+        // Single-language model with detection off: the model's only
+        // language is the decision.
+        let language = info
+            .supported_languages
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "auto".to_string());
+        let decision = LanguageDecision {
+            language: Some(language.clone()),
+            source: LanguageSource::Model,
+        };
+        let text = self
+            .whisperkit
+            .transcribe(&audio, Some(&language))
+            .map_err(|e| match e {
+                crate::whisperkit::WhisperKitError::Cancelled => {
+                    engine_error(EngineError::Cancelled)
+                }
+                e => anyhow::anyhow!("whisperkit transcription failed: {}", e),
+            })?;
+        Ok(RunOutcome {
+            setup: RunSetup {
+                // Unused by this path (no chunking, no vocabulary prompting);
+                // present because `custom_words_prompted` reads it.
+                run_options: RunOptions::default(),
+                language: decision,
+                languages: vec![language.clone()],
+                applied_language_hint: Some(language),
+                output_was_translated: false,
+            },
+            text,
+            model_detected_language: None,
+        })
+    }
+
     /// Starts loading the model in the background unless it's loaded or
     /// loading, and returns whether it did. Only a dictation sets
     /// `raise_notice`: file jobs and Settings report their own failures.
@@ -775,7 +924,11 @@ impl TranscriptionManager {
     /// diagnostics (e.g. confirming `--device-index` actually bound a GPU rather
     /// than falling back to CPU/auto); `None` when no model is loaded.
     pub fn current_backend(&self) -> Option<String> {
-        self.engine.loaded().map(|info| info.backend)
+        self.engine.loaded().map(|info| info.backend).or_else(|| {
+            self.whisperkit
+                .is_model_loaded()
+                .then(|| "whisperkit".to_string())
+        })
     }
 
     /// Whether a file job is queued or running, which holds the model.
@@ -963,6 +1116,7 @@ impl TranscriptionManager {
     /// it is stopped; the model stays loaded and the next use starts a fresh
     /// worker for it.
     pub fn cancel_transcription(&self) {
+        self.whisperkit.cancel();
         self.engine.cancel();
     }
 
@@ -1065,6 +1219,9 @@ impl TranscriptionManager {
         // included) stops every run of this transcription.
         let mark = self.engine.cancel_mark();
         self.touch_activity();
+        if self.uses_whisperkit() {
+            return self.transcribe_whisperkit(audio);
+        }
         let batch = self.batch_context(&audio)?;
         self.transcribe_cpp(mark, batch, audio)
     }
