@@ -1,7 +1,7 @@
 use super::model_capabilities::{
     CapabilityProbe, CapabilityProber, Compatibility, GgufHeaderProber,
 };
-use crate::settings::{get_settings, write_settings};
+use crate::settings::{get_settings, write_settings, AppSettings, TranscriptionRuntime};
 use anyhow::Result;
 use hf_hub::api::tokio::{ApiBuilder, CancellationToken, Progress};
 use hf_hub::{Cache, Repo, RepoType};
@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 mod download;
+mod whisperkit;
 
 use download::{
     HttpDownloadOutcome, RateMeter, DOWNLOAD_STALL_TIMEOUT, PROGRESS_THROTTLE, PROGRESS_TICK,
@@ -36,6 +37,15 @@ pub enum ModelSource {
     /// HF cache (so other tools reuse it). The file within the repo is
     /// [`ModelInfo::filename`].
     HuggingFace { repo_id: String, revision: String },
+    /// A WhisperKit (Core ML) model folder inside a Hugging Face repo,
+    /// downloaded file-by-file into `<models>/whisperkit/<folder>` and loaded
+    /// by the Swift WhisperKit engine on macOS Apple Silicon. Not a GGUF: no
+    /// transcribe-cpp anywhere.
+    WhisperKit {
+        repo_id: String,
+        revision: String,
+        folder: String,
+    },
     /// Already present on disk — a user-provided custom model, or one discovered
     /// in a shared cache. Nothing to download.
     Local,
@@ -61,6 +71,34 @@ pub struct ModelInfo {
     pub is_custom: bool,            // Whether this is a user-provided custom model
     pub supports_streaming: bool, // Whether this model supports live streaming preview (transcribe-cpp)
     pub supports_language_detection: bool, // Whether the model can auto-detect language (gates the "Auto" option)
+}
+
+impl ModelInfo {
+    /// The runtime this model runs on: WhisperKit folders on WhisperKit,
+    /// everything else on transcribe-cpp.
+    pub fn runtime(&self) -> TranscriptionRuntime {
+        match self.source {
+            ModelSource::WhisperKit { .. } => TranscriptionRuntime::WhisperKit,
+            _ => TranscriptionRuntime::TranscribeCpp,
+        }
+    }
+}
+
+/// Whether this build and OS can run WhisperKit at all.
+pub fn whisperkit_available() -> bool {
+    crate::whisperkit::WhisperKitEngine::supported()
+}
+
+/// The runtime in effect: the setting, except that a stored `WhisperKit` on a
+/// build or OS that can't run it falls back to transcribe-cpp, so a settings
+/// file copied between machines never leaves the user without models.
+pub fn effective_runtime(settings: &AppSettings) -> TranscriptionRuntime {
+    match settings.transcription_runtime {
+        TranscriptionRuntime::WhisperKit if !whisperkit_available() => {
+            TranscriptionRuntime::TranscribeCpp
+        }
+        runtime => runtime,
+    }
 }
 
 const CHINESE_LANGUAGE_CODE: &str = "zh";
@@ -1057,6 +1095,47 @@ impl ModelManager {
             },
         );
 
+        // Bengali Whisper Medium via WhisperKit/Core ML. Registered only where
+        // the Swift engine actually runs (macOS Apple Silicon, OS >= 14, real
+        // package build); everywhere else the model stays invisible rather
+        // than downloadable-but-unloadable.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        if crate::whisperkit::WhisperKitEngine::supported() {
+            const BENGALI_REPO: &str = "omnixima/bengaliai-whisper-medium-coreml";
+            const BENGALI_REVISION: &str = "8b5433d62c5841deb0055c7eedfe60e10021e7cc";
+            const BENGALI_FOLDER: &str = "bengaliai-whisper-medium";
+            available_models.insert(
+                format!("whisperkit/{BENGALI_FOLDER}"),
+                ModelInfo {
+                    id: format!("whisperkit/{BENGALI_FOLDER}"),
+                    name: "Bengali Whisper Medium (WhisperKit)".to_string(),
+                    description: "Bengali (বাংলা) Whisper Medium fine-tune running on \
+                                   Apple Core ML / Neural Engine via WhisperKit. Apple \
+                                   Silicon only; no streaming preview."
+                        .to_string(),
+                    filename: BENGALI_FOLDER.to_string(),
+                    source: ModelSource::WhisperKit {
+                        repo_id: BENGALI_REPO.to_string(),
+                        revision: BENGALI_REVISION.to_string(),
+                        folder: BENGALI_FOLDER.to_string(),
+                    },
+                    size_mb: 584,
+                    is_downloaded: false,
+                    is_downloading: false,
+                    partial_size: 0,
+                    accuracy_score: 0.80,
+                    speed_score: 0.55,
+                    supports_translation: false,
+                    is_recommended: false,
+                    supported_languages: vec!["bn".to_string()],
+                    supports_language_selection: false,
+                    is_custom: false,
+                    supports_streaming: false,
+                    supports_language_detection: false,
+                },
+            );
+        }
+
         // Seed the bundled offline catalog before the on-disk scans, so a model
         // already in the HF cache dedups onto its richer catalog entry (the scans
         // only insert ids not already present) instead of showing as a bare cache
@@ -1111,6 +1190,16 @@ impl ModelManager {
                 .then_with(|| a.name.cmp(&b.name))
         });
         list
+    }
+
+    /// [`Self::get_available_models`] narrowed to the runtime in effect: what
+    /// the UI and tray offer. Headless CLI paths keep the full registry.
+    pub fn get_runtime_models(&self) -> Vec<ModelInfo> {
+        let runtime = effective_runtime(&get_settings(&self.app_handle));
+        self.get_available_models()
+            .into_iter()
+            .filter(|model| model.runtime() == runtime)
+            .collect()
     }
 
     /// Seed every bundled catalog default into the registry (additive).
@@ -1341,6 +1430,13 @@ impl ModelManager {
                 }
                 continue;
             }
+            if let ModelSource::WhisperKit { folder, .. } = &model.source {
+                let status = whisperkit::disk_status(&self.models_dir, folder);
+                model.is_downloaded = status.is_downloaded;
+                model.is_downloading = false;
+                model.partial_size = status.partial_size;
+                continue;
+            }
             let model_path = self.models_dir.join(&model.filename);
             let partial_path = self.models_dir.join(format!("{}.partial", &model.filename));
 
@@ -1485,7 +1581,7 @@ impl ModelManager {
         // ranked order the UI receives.
         if settings.selected_model.is_empty() {
             if let Some(available_model) = self
-                .get_available_models()
+                .get_runtime_models()
                 .into_iter()
                 .find(|model| model.is_downloaded)
             {
@@ -2277,6 +2373,15 @@ impl ModelManager {
                     .download_hf_model(&model_info, repo_id.clone(), revision.clone())
                     .await;
             }
+            ModelSource::WhisperKit {
+                repo_id,
+                revision,
+                folder,
+            } => {
+                return self
+                    .download_whisperkit_model(&model_info, repo_id, revision, folder)
+                    .await;
+            }
             ModelSource::Local => {
                 return Err(anyhow::anyhow!("No download source for model"));
             }
@@ -2380,6 +2485,12 @@ impl ModelManager {
             model_info.ok_or_else(|| anyhow::anyhow!("Model not found: {}", model_id))?;
 
         debug!("ModelManager: Found model info: {:?}", model_info);
+        if let ModelSource::WhisperKit { folder, .. } = &model_info.source {
+            self.delete_whisperkit_model(&model_info, folder)?;
+            self.update_download_status()?;
+            let _ = self.app_handle.emit("model-deleted", model_id);
+            return Ok(());
+        }
 
         if let ModelSource::HuggingFace { repo_id, revision } = &model_info.source {
             // Only this entry's own file, every cached copy of it. Other
@@ -2545,6 +2656,17 @@ impl ModelManager {
             self.mark_model_unavailable(model_id);
             return Err(anyhow::anyhow!(
                 "Complete model file not found in HF cache or models dir: {}",
+                model_id
+            ));
+        }
+        if let ModelSource::WhisperKit { folder, .. } = &model_info.source {
+            let dir = whisperkit::model_dir(&self.models_dir, folder);
+            if whisperkit::is_complete(&dir) {
+                return Ok(dir);
+            }
+            self.mark_model_unavailable(model_id);
+            return Err(anyhow::anyhow!(
+                "WhisperKit model folder incomplete: {}",
                 model_id
             ));
         }

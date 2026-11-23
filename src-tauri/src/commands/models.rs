@@ -1,7 +1,10 @@
-use crate::managers::model::{ModelInfo, ModelManager, RetiredModel, LANGUAGE_DETECTOR_ID};
+use crate::managers::model::{
+    effective_runtime, whisperkit_available, ModelInfo, ModelManager, RetiredModel,
+    LANGUAGE_DETECTOR_ID,
+};
 use crate::managers::transcription::{ModelStateEvent, TranscriptionManager};
 use crate::notices::{self, NoticeSource};
-use crate::settings::{get_settings, write_settings, ModelUnloadTimeout};
+use crate::settings::{get_settings, write_settings, ModelUnloadTimeout, TranscriptionRuntime};
 use log::error;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -11,7 +14,75 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub async fn get_available_models(
     model_manager: State<'_, Arc<ModelManager>>,
 ) -> Result<Vec<ModelInfo>, String> {
-    Ok(model_manager.get_available_models())
+    Ok(model_manager.get_runtime_models())
+}
+
+/// Whether this build and OS can run the WhisperKit runtime; the frontend
+/// offers the runtime choice only when it can.
+#[tauri::command]
+#[specta::specta]
+pub fn is_whisperkit_available() -> bool {
+    whisperkit_available()
+}
+
+/// Switch the transcription runtime. The selected model must belong to the
+/// runtime in effect, so a model of the other runtime is unloaded and the
+/// first downloaded model of the new runtime (if any) takes its place; with
+/// none, the selection is cleared and the user picks one from the list.
+#[tauri::command]
+#[specta::specta]
+pub async fn change_transcription_runtime_setting(
+    app: AppHandle,
+    runtime: TranscriptionRuntime,
+) -> Result<(), String> {
+    if runtime == TranscriptionRuntime::WhisperKit && !whisperkit_available() {
+        return Err("WhisperKit isn't available on this Mac".to_string());
+    }
+    let settings = get_settings(&app);
+    if settings.transcription_runtime == runtime {
+        return Ok(());
+    }
+    let transcription_manager = app.state::<Arc<TranscriptionManager>>().inner().clone();
+    transcription_manager.ensure_model_unlocked()?;
+
+    let model_manager = app.state::<Arc<ModelManager>>().inner().clone();
+    let selected_mismatch = model_manager
+        .get_model_info(&settings.selected_model)
+        .is_some_and(|model| model.runtime() != runtime);
+
+    let mut settings = settings;
+    settings.transcription_runtime = runtime;
+    if selected_mismatch {
+        settings.selected_model = String::new();
+    }
+    write_settings(&app, settings);
+
+    if selected_mismatch {
+        // Waits for the worker or the Swift engine to release the model, so
+        // keep it off the async workers.
+        let tm = Arc::clone(&transcription_manager);
+        tauri::async_runtime::spawn_blocking(move || tm.unload_model())
+            .await
+            .map_err(|e| format!("Failed to unload model: {}", e))?
+            .map_err(|e| format!("Failed to unload model: {}", e))?;
+
+        let replacement = model_manager
+            .get_runtime_models()
+            .into_iter()
+            .find(|model| model.is_downloaded);
+        if let Some(model) = replacement {
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                switch_active_model(&app_clone, &model.id)
+            })
+            .await
+            .map_err(|e| format!("Failed to switch model: {}", e))??;
+        }
+    }
+
+    let _ = app.emit("models-updated", ());
+    crate::tray::update_tray_menu(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -167,6 +238,13 @@ pub fn switch_active_model(app: &AppHandle, model_id: &str) -> Result<(), String
 
     if !model_info.is_downloaded {
         return Err(format!("Model not downloaded: {}", model_id));
+    }
+
+    if model_info.runtime() != effective_runtime(&get_settings(app)) {
+        return Err(format!(
+            "Model {} runs on another transcription runtime; switch the runtime in Advanced settings first",
+            model_id
+        ));
     }
 
     let settings = get_settings(app);

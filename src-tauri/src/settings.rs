@@ -349,6 +349,22 @@ pub enum VadBackend {
     Earshot,
 }
 
+/// The engine that runs transcription models. Each model belongs to exactly
+/// one runtime; only the selected runtime's models are offered and loaded.
+/// WhisperKit exists only on macOS Apple Silicon builds with the Swift
+/// package; elsewhere a stored `WhisperKit` value is read as `TranscribeCpp`
+/// (see `managers::model::effective_runtime`).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionRuntime {
+    /// transcribe-cpp (GGUF/GGML models): every platform, the default.
+    #[default]
+    TranscribeCpp,
+    /// WhisperKit (Core ML model folders) on macOS Apple Silicon.
+    #[serde(rename = "whisperkit")]
+    WhisperKit,
+}
+
 /// When Handy's spoken-language detector picks the language for Auto.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Type, Default)]
 #[serde(rename_all = "snake_case")]
@@ -556,6 +572,10 @@ pub struct AppSettings {
     /// Experimental detector implementation. Silero remains the stable default.
     #[serde(default)]
     pub vad_backend: VadBackend,
+    /// Which engine runs transcription models; older stores lack the key and
+    /// keep the transcribe-cpp default.
+    #[serde(default)]
+    pub transcription_runtime: TranscriptionRuntime,
     /// Decode long audio in chunks cut at pauses, for models whose accuracy
     /// degrades on long audio. Independent of `vad_enabled`, which only
     /// decides whether silence is dropped from recordings.
@@ -1072,6 +1092,7 @@ pub fn get_default_settings() -> AppSettings {
         extra_recording_buffer_ms: 0,
         vad_enabled: default_vad_enabled(),
         vad_backend: VadBackend::default(),
+        transcription_runtime: TranscriptionRuntime::default(),
         long_form_chunking: default_long_form_chunking(),
         language_detection: LanguageDetectionMode::default(),
         language_detection_window_secs: default_language_detection_window_secs(),
@@ -1675,6 +1696,11 @@ mod tests {
         assert_eq!(settings.sound_theme, SoundTheme::Pop);
         assert!(settings.filler_word_removal_enabled);
         assert_eq!(settings.vad_backend, VadBackend::Silero);
+        assert_eq!(
+            settings.transcription_runtime,
+            TranscriptionRuntime::TranscribeCpp,
+            "stores saved before the runtime setting keep transcribe-cpp"
+        );
         assert!(
             settings.long_form_chunking,
             "chunking is on for settings saved before it existed"
