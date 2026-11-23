@@ -93,10 +93,16 @@ export const useModelEntries = () => {
       );
     const rest = entries.filter((e) => !onDisk(e));
     const curated = rest.filter((e) => e.kind === "curated").sort(byFit);
+    // WhisperKit (curated-kind) entries have no catalog record; their fit is
+    // the languages they advertise.
+    const missingOf = (e: Entry) =>
+      e.model
+        ? facts.missing(e.model)
+        : facts.langs.filter((l) => !e.languages.includes(l));
     return {
       yours,
-      fits: curated.filter((e) => !facts.missing(e.model).length),
-      partial: curated.filter((e) => facts.missing(e.model).length > 0),
+      fits: curated.filter((e) => missingOf(e).length === 0),
+      partial: curated.filter((e) => missingOf(e).length > 0),
       untested: rest.filter((e) => e.kind !== "curated").sort(byFit),
     };
   }, [entries, infos, current, facts]);

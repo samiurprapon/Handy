@@ -813,6 +813,27 @@ async rescanLocalModels() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Whether this build and OS can run the WhisperKit runtime; the frontend
+ * offers the runtime choice only when it can.
+ */
+async isWhisperkitAvailable() : Promise<boolean> {
+    return await TAURI_INVOKE("is_whisperkit_available");
+},
+/**
+ * Switch the transcription runtime. The selected model must belong to the
+ * runtime in effect, so a model of the other runtime is unloaded and the
+ * first downloaded model of the new runtime (if any) takes its place; with
+ * none, the selection is cleared and the user picks one from the list.
+ */
+async changeTranscriptionRuntimeSetting(runtime: TranscriptionRuntime) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("change_transcription_runtime_setting", { runtime }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async updateMicrophoneMode(alwaysOn: boolean) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("update_microphone_mode", { alwaysOn }) };
@@ -1170,6 +1191,11 @@ transcribe_gpu_device?: string | null; extra_recording_buffer_ms?: number; vad_e
  */
 vad_backend?: VadBackend; 
 /**
+ * Which engine runs transcription models; older stores lack the key and
+ * keep the transcribe-cpp default.
+ */
+transcription_runtime?: TranscriptionRuntime; 
+/**
  * Decode long audio in chunks cut at pauses, for models whose accuracy
  * degrades on long audio. Independent of `vad_enabled`, which only
  * decides whether silence is dropped from recordings.
@@ -1342,6 +1368,13 @@ sha256: string | null } } |
  * [`ModelInfo::filename`].
  */
 { HuggingFace: { repo_id: string; revision: string } } | 
+/**
+ * A WhisperKit (Core ML) model folder inside a Hugging Face repo,
+ * downloaded file-by-file into `<models>/whisperkit/<folder>` and loaded
+ * by the Swift WhisperKit engine on macOS Apple Silicon. Not a GGUF: no
+ * transcribe-cpp anywhere.
+ */
+{ WhisperKit: { repo_id: string; revision: string; folder: string } } | 
 /**
  * Already present on disk — a user-provided custom model, or one discovered
  * in a shared cache. Nothing to download.
@@ -1565,6 +1598,22 @@ export type TranscriptionOutcome =
  * Transcribing or pasting failed.
  */
 "failed"
+/**
+ * The engine that runs transcription models. Each model belongs to exactly
+ * one runtime; only the selected runtime's models are offered and loaded.
+ * WhisperKit exists only on macOS Apple Silicon builds with the Swift
+ * package; elsewhere a stored `WhisperKit` value is read as `TranscribeCpp`
+ * (see `managers::model::effective_runtime`).
+ */
+export type TranscriptionRuntime = 
+/**
+ * transcribe-cpp (GGUF/GGML models): every platform, the default.
+ */
+"transcribe_cpp" | 
+/**
+ * WhisperKit (Core ML model folders) on macOS Apple Silicon.
+ */
+"whisperkit"
 export type TypingTool = "auto" | "wtype" | "kwtype" | "dotool" | "ydotool" | "xdotool"
 export type VadBackend = "silero" | "earshot"
 export type WindowsMicrophonePermissionStatus = { supported: boolean; overall_access: PermissionAccess; device_access: PermissionAccess; app_access: PermissionAccess; desktop_app_access: PermissionAccess }

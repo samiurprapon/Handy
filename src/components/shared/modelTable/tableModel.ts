@@ -12,6 +12,11 @@ import type { TableModel } from "./context";
 export const isLegacyModel = (model: ModelInfo): boolean =>
   typeof model.source === "object" && "Url" in model.source;
 
+// WhisperKit (Core ML) models: offered like curated ones — they come from the
+// backend's own registry, not the community catalog.
+export const isWhisperKitModel = (model: ModelInfo): boolean =>
+  typeof model.source === "object" && "WhisperKit" in model.source;
+
 // Extract a GGUF quantization label from a filename, if present (e.g. "Q8_0").
 const quantOf = (filename: string): string | null => {
   const match = filename.match(
@@ -44,7 +49,7 @@ export const toTableModel = (info: ModelInfo, t: TFunction): TableModel => {
       ? "custom"
       : isLegacyModel(info)
         ? "legacy"
-        : model?.curated
+        : isWhisperKitModel(info) || model?.curated
           ? "curated"
           : "catalog",
     model,

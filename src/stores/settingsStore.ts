@@ -10,6 +10,7 @@ import type {
   ShortcutActivation,
   VadBackend,
   LanguageDetectionMode,
+  TranscriptionRuntime,
 } from "@/bindings";
 import { commands } from "@/bindings";
 import { notify } from "@/stores/noticeStore";
@@ -190,6 +191,17 @@ const settingUpdaters: {
   vad_enabled: (value) => commands.changeVadEnabledSetting(value as boolean),
   long_form_chunking: (value) =>
     commands.changeLongFormChunkingSetting(value as boolean),
+  transcription_runtime: async (value) => {
+    const result = await commands.changeTranscriptionRuntimeSetting(
+      value as TranscriptionRuntime,
+    );
+    if (result.status === "error") {
+      // Rejected switches (e.g. mid-transcription) roll the dropdown back via
+      // the throw below; the notice tells the user why.
+      notify({ title: result.error });
+      throw new Error(result.error);
+    }
+  },
   vad_backend: async (value) => {
     const result = await commands.changeVadBackendSetting(value as VadBackend);
     if (result.status === "error") {

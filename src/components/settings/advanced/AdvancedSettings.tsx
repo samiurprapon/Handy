@@ -26,6 +26,7 @@ import { LazyStreamClose } from "../LazyStreamClose";
 import { AirPodsMode } from "../AirPodsMode";
 import { FillerWordRemoval } from "../FillerWordRemoval";
 import { VadBackendSelector } from "../VadBackendSelector";
+import { TranscriptionRuntimeSelector } from "../TranscriptionRuntimeSelector";
 
 export const AdvancedSettings: React.FC = () => {
   const { t } = useTranslation();
@@ -51,6 +52,7 @@ export const AdvancedSettings: React.FC = () => {
       </SettingsGroup>
 
       <SettingsGroup title={t("settings.advanced.groups.transcription")}>
+        <TranscriptionRuntimeSelector descriptionMode="tooltip" grouped />
         <VoiceActivityDetection descriptionMode="tooltip" grouped={true} />
         <LongFormChunking descriptionMode="tooltip" grouped={true} />
         <FillerWordRemoval descriptionMode="tooltip" grouped={true} />
