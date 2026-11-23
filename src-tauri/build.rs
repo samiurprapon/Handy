@@ -1,6 +1,8 @@
 fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     build_apple_intelligence_bridge();
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    build_whisperkit_bridge();
 
     generate_tray_translations();
 
@@ -573,4 +575,248 @@ fn is_command_line_tools_only() -> bool {
         .and_then(|out| String::from_utf8(out.stdout).ok())
         .map(|path| path.trim().ends_with("CommandLineTools"))
         .unwrap_or(false)
+}
+
+/// Build the WhisperKit Swift package (src-tauri/swift/WhisperKitBridge) and
+/// link it as a static library, following the apple_intelligence bridge
+/// pattern: real build when the toolchain can, single-file stub when it
+/// cannot (HANDY_FORCE_WHISPERKIT_STUB=1 forces the stub). A stub build is
+/// loudly warned about and reports itself as unsupported at runtime, so the
+/// engine and its models disappear rather than half-work.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn build_whisperkit_bridge() {
+    use std::env;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    const PACKAGE_DIR: &str = "swift/WhisperKitBridge";
+    const STUB_SWIFT_FILE: &str = "swift/whisperkit_stub.swift";
+
+    // Rebuild when any input changes (never .build — SwiftPM owns it).
+    println!("cargo:rerun-if-changed={STUB_SWIFT_FILE}");
+    if let Ok(entries) = walk_swift_sources(Path::new(PACKAGE_DIR)) {
+        for path in entries {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
+    let lib_path = out_dir.join("libwhisperkit_bridge.a");
+
+    let force_stub = env::var("HANDY_FORCE_WHISPERKIT_STUB").as_deref() == Ok("1");
+    let built = !force_stub && build_whisperkit_package(PACKAGE_DIR);
+
+    if built {
+        // Combine the module objects into one archive for the Rust link.
+        let build_dir = Path::new(PACKAGE_DIR).join(".build/release");
+        let status = Command::new("libtool")
+            .arg("-static")
+            .arg("-o")
+            .arg(&lib_path)
+            .args(
+                whisperkit_module_objects()
+                    .iter()
+                    .map(|name| build_dir.join(name)),
+            )
+            .status()
+            .expect("run libtool for the WhisperKit bridge");
+        assert!(status.success(), "libtool failed for the WhisperKit bridge");
+        println!(
+            "cargo:warning=Building with the WhisperKit engine ({}).",
+            whisperkit_pin()
+        );
+        link_swift_runtime(true);
+    } else {
+        // Compile the single-file stub exactly like the apple_intelligence
+        // fallback: swiftc, then libtool.
+        let (swiftc, sdk) = match locate_swift_toolchain() {
+            Some(found) => found,
+            None => panic!(
+                "WhisperKit stub needs a Swift toolchain; set SWIFTC/SDKROOT or \
+                 install Command Line Tools"
+            ),
+        };
+        let object = out_dir.join("whisperkit_stub.o");
+        let status = Command::new(&swiftc)
+            .args(["-parse-as-library", "-target", "arm64-apple-macosx11.0"])
+            .arg("-sdk")
+            .arg(&sdk)
+            .arg("-O")
+            .arg("-c")
+            .arg(STUB_SWIFT_FILE)
+            .arg("-o")
+            .arg(&object)
+            .status()
+            .expect("run swiftc for the WhisperKit stub");
+        assert!(
+            status.success(),
+            "swiftc failed to compile {STUB_SWIFT_FILE}"
+        );
+        let status = Command::new("libtool")
+            .args(["-static", "-o"])
+            .arg(&lib_path)
+            .arg(&object)
+            .status()
+            .expect("run libtool for the WhisperKit stub");
+        assert!(status.success(), "libtool failed for the WhisperKit stub");
+        println!(
+            "cargo:warning=Building WITHOUT the WhisperKit engine (stub only). The \
+             Bengali Core ML model needs a full Swift toolchain; set \
+             HANDY_FORCE_WHISPERKIT_STUB=1 to silence this."
+        );
+        link_swift_runtime(false);
+    }
+
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=whisperkit_bridge");
+}
+
+/// Run `swift build` for the WhisperKit package. On failure the tail of the
+/// output is surfaced as a cargo warning and the caller falls back to stubs.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn build_whisperkit_package(package_dir: &str) -> bool {
+    use std::process::Command;
+
+    let Some((swiftc, _sdk)) = locate_swift_toolchain() else {
+        println!("cargo:warning=No Swift toolchain found; WhisperKit engine disabled.");
+        return false;
+    };
+    // `swift build` sits next to `swiftc` in every toolchain layout.
+    let swift = swiftc
+        .parent()
+        .map(|p| p.join("swift"))
+        .unwrap_or_else(|| "swift".into());
+
+    // The environment (including a SWIFTC/SDKROOT override for non-Xcode
+    // toolchains) passes through untouched; SwiftPM reads SDKROOT itself.
+    let output = match Command::new(&swift)
+        .arg("build")
+        .arg("--configuration")
+        .arg("release")
+        .arg("--package-path")
+        .arg(package_dir)
+        .output()
+    {
+        Ok(output) => output,
+        Err(e) => {
+            println!("cargo:warning=Failed to run swift build: {e}");
+            return false;
+        }
+    };
+    if !output.status.success() {
+        let tail = String::from_utf8_lossy(&output.stderr);
+        let tail = tail.lines().rev().take(12).collect::<Vec<_>>().join("\n");
+        println!("cargo:warning=swift build failed for WhisperKitBridge:\n{tail}");
+        return false;
+    }
+    // Sanity: every module object we link must exist.
+    let release = std::path::Path::new(package_dir).join(".build/release");
+    whisperkit_module_objects()
+        .iter()
+        .all(|name| release.join(name).is_file())
+}
+
+/// The module objects SwiftPM emits that must be linked. A missing one (a
+/// layout change in a future WhisperKit pin) falls back to the stub instead
+/// of failing the link.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn whisperkit_module_objects() -> [&'static str; 3] {
+    ["WhisperKitBridge.o", "WhisperKit.o", "ArgmaxCore.o"]
+}
+
+/// The pinned WhisperKit release, kept in one place for warnings and logs.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn whisperkit_pin() -> &'static str {
+    "WhisperKit 1.1.1"
+}
+
+/// Swift runtime + framework link lines, shared by the real and stub builds.
+/// `real` adds the frameworks only WhisperKit needs (Core ML, Accelerate).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn link_swift_runtime(real: bool) {
+    let Some((swiftc, sdk)) = locate_swift_toolchain() else {
+        return;
+    };
+    let toolchain_swift_lib = swiftc
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|root| root.join("lib/swift/macosx"));
+    if let Some(dir) = toolchain_swift_lib {
+        println!("cargo:rustc-link-search=native={}", dir.display());
+    }
+    println!(
+        "cargo:rustc-link-search=native={}",
+        sdk.join("usr/lib/swift").display()
+    );
+    println!("cargo:rustc-link-lib=framework=Foundation");
+    if real {
+        println!("cargo:rustc-link-lib=framework=CoreML");
+        println!("cargo:rustc-link-lib=framework=Accelerate");
+    }
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+}
+
+/// Locate swiftc and the macOS SDK, honoring the SWIFTC/SDKROOT overrides
+/// used by non-Xcode toolchains (same convention as the apple_intelligence
+/// bridge).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn locate_swift_toolchain() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    use std::env;
+    use std::process::Command;
+
+    let sdk = match env::var("SDKROOT") {
+        Ok(sdk) if !sdk.is_empty() => std::path::PathBuf::from(sdk),
+        _ => {
+            let out = Command::new("xcrun")
+                .args(["--sdk", "macosx", "--show-sdk-path"])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            std::path::PathBuf::from(String::from_utf8(out.stdout).ok()?.trim())
+        }
+    };
+
+    let swiftc = match env::var("SWIFTC") {
+        Ok(swiftc) if !swiftc.is_empty() => std::path::PathBuf::from(swiftc),
+        _ => {
+            let out = Command::new("xcrun")
+                .args(["--find", "swiftc"])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            std::path::PathBuf::from(String::from_utf8(out.stdout).ok()?.trim())
+        }
+    };
+    Some((swiftc, sdk))
+}
+
+/// Every file under `root` worth a rerun-if-changed: Package.swift plus the
+/// package's Swift sources (tests excluded — they never reach the link).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn walk_swift_sources(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    fn visit(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|n| n == ".build") {
+                    continue;
+                }
+                visit(&path, out)?;
+            } else if path.extension().is_some_and(|e| e == "swift")
+                || path.file_name().is_some_and(|n| n == "Package.swift")
+            {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    out.push(root.join("Package.swift"));
+    visit(root, &mut out)?;
+    Ok(out)
 }
